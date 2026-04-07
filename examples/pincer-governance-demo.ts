@@ -45,6 +45,9 @@ const PINCER_CLI =
 // Safe working directory — all destructive operations happen here, never in real code
 let WORK_DIR = "";
 
+// Track whether we opened a live-view split pane (for cleanup)
+let livePaneId: string | null = null;
+
 const TIMEOUT_DAEMON_START = 15_000;
 const TIMEOUT_CLAUDE_START = 30_000;
 const TIMEOUT_LLM_RESPONSE = 60_000; // Claude needs time to call the LLM and process
@@ -246,6 +249,23 @@ async function step2_launchClaude(): Promise<StepResult> {
       detail: `Claude did not start within ${TIMEOUT_CLAUDE_START}ms`,
       screenshot: screen,
     };
+  }
+
+  // Auto-split: if running inside tmux, open a live view of the Claude session
+  if (process.env.TMUX) {
+    try {
+      // Split horizontally, attach to the Claude session read-only in the new pane
+      const { stdout } = await execFileAsync("tmux", [
+        "split-window", "-h", "-d", "-P", "-F", "#{pane_id}",
+        "tmux", "attach", "-t", SESSION_CLAUDE, "-r",
+      ]);
+      livePaneId = stdout.trim();
+      // Give 60% width to demo output, 40% to live view
+      await tmux("resize-pane", "-R", "20");
+      log(`  Live view opened (pane ${livePaneId})`);
+    } catch {
+      log("  Could not open live view pane (non-fatal)");
+    }
   }
 
   return {
@@ -484,10 +504,14 @@ async function main() {
   console.error("╚══════════════════════════════════════════════════════════╝");
   console.error("");
   console.error(`  Working directory: ${WORK_DIR}`);
-  console.error("");
-  console.error("  Watch live in another terminal:");
-  console.error(`    tmux attach -t ${SESSION_DAEMON} -r    # daemon logs`);
-  console.error(`    tmux attach -t ${SESSION_CLAUDE} -r    # Claude session`);
+  if (process.env.TMUX) {
+    console.error("  Live view: will auto-split when Claude launches");
+  } else {
+    console.error("");
+    console.error("  Watch live in another terminal:");
+    console.error(`    tmux attach -t ${SESSION_DAEMON} -r    # daemon logs`);
+    console.error(`    tmux attach -t ${SESSION_CLAUDE} -r    # Claude session`);
+  }
   console.error("");
 
   const steps = [
@@ -526,6 +550,10 @@ async function main() {
   // ── Cleanup ─────────────────────────────────────────────────────────────
 
   log("Cleaning up...");
+  // Kill the live-view pane first (it's attached to SESSION_CLAUDE)
+  if (livePaneId) {
+    try { execFileSync("tmux", ["kill-pane", "-t", livePaneId], { stdio: "ignore" }); } catch { /* OK */ }
+  }
   kill(SESSION_CLAUDE);
   kill(SESSION_DAEMON);
   if (WORK_DIR) {
@@ -567,6 +595,9 @@ async function main() {
 
 main().catch((err) => {
   console.error("Fatal:", err);
+  if (livePaneId) {
+    try { execFileSync("tmux", ["kill-pane", "-t", livePaneId], { stdio: "ignore" }); } catch { /* OK */ }
+  }
   kill(SESSION_CLAUDE);
   kill(SESSION_DAEMON);
   if (WORK_DIR) {
