@@ -335,7 +335,7 @@ async function step3_safeCommand(): Promise<StepResult> {
 
   // Check if a governance prompt appeared (it shouldn't for ls)
   const hasGovernance =
-    /\[Y\] allow|\[y\] allow once|PINCER: HIGH-RISK/.test(screen);
+    /requires confirmation|Do you want to proceed|ask:/.test(screen);
 
   if (hasGovernance) {
     return {
@@ -381,18 +381,21 @@ async function step4_destructiveCommand(): Promise<StepResult> {
   log("  Waiting for Claude to process destructive request...");
   await waitFor(claudeTarget, /\.{3}|Thinking|thinking|Running|Bash/, 15_000);
 
-  // Wait for the governance dialog to appear (Pincer hook intercepts the tool call)
+  // Wait for the governance dialog — Claude renders it as:
+  //   "Hook PreToolUse:Bash requires confirmation for this command:"
+  //   "• pincer · rm -rf ... · ask:destructive-operation"
+  //   "Do you want to proceed?"
+  //   "❯ 1. Yes"  /  "2. No"
   log("  Waiting for governance dialog...");
   const { found, screen, elapsed } = await waitFor(
     claudeTarget,
-    /Pincer|PINCER|allow.*deny|allow once|\[Y\]|\[y\]|\[N\]/,
+    /requires confirmation|Do you want to proceed|ask:|pincer \·/,
     TIMEOUT_GOVERNANCE
   );
 
   printScreen("Governance dialog", screen);
 
   if (!found) {
-    // Claude might not have decided to use the tool, or used a different approach
     return {
       name,
       status: "SKIP",
@@ -401,20 +404,17 @@ async function step4_destructiveCommand(): Promise<StepResult> {
     };
   }
 
-  // Determine which tier of prompt appeared
-  let tier = "unknown";
-  if (/HIGH-RISK/.test(screen)) {
-    tier = "critical";
-  } else if (/── Pincer ──/.test(screen)) {
-    tier = "medium";
-  } else if (/\[Y\] allow/.test(screen)) {
-    tier = "simple";
+  // Classify what we see
+  let classification = "governance dialog";
+  const askMatch = screen.match(/ask:([^\s]+)/);
+  if (askMatch) {
+    classification = `ask:${askMatch[1]}`;
   }
 
   return {
     name,
     status: "PASS",
-    detail: `Governance dialog appeared (${tier} tier, ${elapsed}ms)`,
+    detail: `Governance dialog appeared (${classification}, ${elapsed}ms)`,
     screenshot: screen,
     elapsed,
   };
@@ -426,8 +426,8 @@ async function step5_respondToDialog(): Promise<StepResult> {
 
   const screen = await screenshot(claudeTarget);
 
-  // Check if there's actually a prompt to respond to
-  if (!/allow.*deny|allow once|\[Y\]|\[y\]|\[N\]/.test(screen)) {
+  // Check if there's actually a dialog to respond to
+  if (!/Do you want to proceed|1\. Yes|2\. No/.test(screen)) {
     return {
       name,
       status: "SKIP",
@@ -436,17 +436,23 @@ async function step5_respondToDialog(): Promise<StepResult> {
     };
   }
 
-  // Send "n" to deny the destructive operation
-  await type(claudeTarget, "n");
+  // The dialog shows "1. Yes" / "2. No" — navigate to "2. No" and press Enter to deny.
+  // The cursor starts on "1. Yes" (❯), so press Down then Enter to select No.
+  log("  Selecting '2. No' to deny the destructive operation...");
+  await sendKey(claudeTarget, "Down");
+  await sleep(200);
   await sendKey(claudeTarget, "Enter");
 
-  // Wait for the denial to be processed
-  await sleep(2000);
-  const finalScreen = await screenshot(claudeTarget);
+  // Wait for the dialog to dismiss and Claude to show the denial result
+  const { found: dismissed, screen: finalScreen } = await waitFor(
+    claudeTarget,
+    /denied|rejected|not proceed|aborted|❯\s*$/,
+    15_000
+  );
   printScreen("After deny", finalScreen);
 
-  // The prompt should have been dismissed
-  const promptStillVisible = /\[Y\] allow.*\[n\] deny|\[y\] allow once.*\[n\] deny/.test(finalScreen);
+  // The dialog should no longer be visible
+  const promptStillVisible = /Do you want to proceed/.test(finalScreen);
   if (promptStillVisible) {
     return {
       name,
