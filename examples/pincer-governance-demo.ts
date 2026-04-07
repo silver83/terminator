@@ -26,7 +26,9 @@
 
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const execFileAsync = promisify(execFile);
 
@@ -39,6 +41,9 @@ const PINCERD_BIN =
 const PINCER_CLI =
   process.env.PINCER_CLI ??
   `${process.env.HOME}/Code/pincer/cli/bin/pincer`;
+
+// Safe working directory — all destructive operations happen here, never in real code
+let WORK_DIR = "";
 
 const TIMEOUT_DAEMON_START = 15_000;
 const TIMEOUT_CLAUDE_START = 30_000;
@@ -65,11 +70,16 @@ async function tmuxExists(id: string): Promise<boolean> {
 async function spawn(
   id: string,
   command: string,
-  opts?: { cols?: number; rows?: number }
+  opts?: { cols?: number; rows?: number; cwd?: string }
 ): Promise<void> {
   const cols = opts?.cols ?? 120;
   const rows = opts?.rows ?? 40;
-  await tmux("new-session", "-d", "-s", id, "-x", String(cols), "-y", String(rows), command);
+  const args = ["new-session", "-d", "-s", id, "-x", String(cols), "-y", String(rows)];
+  if (opts?.cwd) {
+    args.push("-c", opts.cwd);
+  }
+  args.push(command);
+  await tmux(...args);
 }
 
 async function type(id: string, text: string): Promise<void> {
@@ -204,7 +214,7 @@ async function step2_launchClaude(): Promise<StepResult> {
   log(name);
 
   const cmd = `${PINCER_CLI} run --no-sandbox -- claude`;
-  await spawn(SESSION_CLAUDE, cmd, { cols: 120, rows: 40 });
+  await spawn(SESSION_CLAUDE, cmd, { cols: 120, rows: 40, cwd: WORK_DIR });
 
   // Wait for the Pincer governance banner
   const bannerResult = await waitFor(
@@ -269,10 +279,11 @@ async function step3_safeCommand(): Promise<StepResult> {
   await waitFor(SESSION_CLAUDE, /\.{3}|Thinking|thinking|Running|Bash/, 15_000);
 
   // Now wait for tool output or Claude's response — ls output should appear
-  // without any governance prompt since ls is safe
+  // without any governance prompt since ls is safe.
+  // We're in a temp dir so look for Claude's response or tool completion indicators.
   const { found, screen, elapsed } = await waitFor(
     SESSION_CLAUDE,
-    /package\.json|tsconfig|src|node_modules|README|LICENSE|Bash|✓/,
+    /Bash|Listed|empty|no files|directory is empty|✓|⏺/,
     TIMEOUT_LLM_RESPONSE
   );
 
@@ -464,10 +475,19 @@ async function step6_failClosed(): Promise<StepResult> {
 // ── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
+  // Create a safe temp directory for all demo operations
+  WORK_DIR = mkdtempSync(join(tmpdir(), "terminator-demo-"));
+
   console.error("╔══════════════════════════════════════════════════════════╗");
   console.error("║  Terminator — Pincer Governance E2E Demo               ║");
   console.error("║  \"Playwright for terminals\"                             ║");
   console.error("╚══════════════════════════════════════════════════════════╝");
+  console.error("");
+  console.error(`  Working directory: ${WORK_DIR}`);
+  console.error("");
+  console.error("  Watch live in another terminal:");
+  console.error(`    tmux attach -t ${SESSION_DAEMON} -r    # daemon logs`);
+  console.error(`    tmux attach -t ${SESSION_CLAUDE} -r    # Claude session`);
   console.error("");
 
   const steps = [
@@ -508,6 +528,10 @@ async function main() {
   log("Cleaning up...");
   kill(SESSION_CLAUDE);
   kill(SESSION_DAEMON);
+  if (WORK_DIR) {
+    try { rmSync(WORK_DIR, { recursive: true, force: true }); } catch { /* OK */ }
+    log(`  Removed temp dir: ${WORK_DIR}`);
+  }
 
   // ── Report ──────────────────────────────────────────────────────────────
 
@@ -545,5 +569,8 @@ main().catch((err) => {
   console.error("Fatal:", err);
   kill(SESSION_CLAUDE);
   kill(SESSION_DAEMON);
+  if (WORK_DIR) {
+    try { rmSync(WORK_DIR, { recursive: true, force: true }); } catch { /* OK */ }
+  }
   process.exit(2);
 });
