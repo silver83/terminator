@@ -245,8 +245,32 @@ async function step2_launchClaude(): Promise<StepResult> {
   const cmd = `${PINCER_CLI} run --no-sandbox -- claude`;
   await spawn(SESSION_CLAUDE, cmd, { cols: 120, rows: 40, cwd: WORK_DIR });
 
-  // Wait for the Pincer governance banner
-  // (claudeTarget still equals SESSION_CLAUDE at this point — join-pane hasn't happened yet)
+  // FIRST: check for the workspace trust dialog — this appears immediately in fresh dirs
+  // and blocks everything until answered. Check before anything else.
+  log("  Checking for workspace trust dialog...");
+  const trustCheck = await waitFor(
+    claudeTarget,
+    /trust this folder|safety check|❯|running under Pincer/i,
+    TIMEOUT_CLAUDE_START
+  );
+
+  if (!trustCheck.found) {
+    printScreen("Claude startup", trustCheck.screen);
+    return {
+      name,
+      status: "FAIL",
+      detail: `Claude did not start within ${TIMEOUT_CLAUDE_START}ms`,
+      screenshot: trustCheck.screen,
+    };
+  }
+
+  if (/trust this folder|safety check/i.test(trustCheck.screen)) {
+    log("  Trust dialog detected — selecting '1. Yes, I trust this folder'");
+    await sendKey(claudeTarget, "Enter");
+    await sleep(1000);
+  }
+
+  // Now wait for the governance banner (may already be visible)
   const bannerResult = await waitFor(
     claudeTarget,
     /running under Pincer governance/,
@@ -258,10 +282,10 @@ async function step2_launchClaude(): Promise<StepResult> {
     printScreen("Pincer banner", bannerResult.screen);
   }
 
-  // Wait for either the ❯ prompt (ready) or the workspace trust dialog
+  // Wait for the ❯ prompt — Claude is ready for input
   const { found, screen, elapsed } = await waitFor(
     claudeTarget,
-    /❯|trust this folder|safety check/i,
+    /❯/,
     TIMEOUT_CLAUDE_START
   );
 
@@ -270,25 +294,9 @@ async function step2_launchClaude(): Promise<StepResult> {
     return {
       name,
       status: "FAIL",
-      detail: `Claude did not start within ${TIMEOUT_CLAUDE_START}ms`,
+      detail: `Claude did not reach input prompt within ${TIMEOUT_CLAUDE_START}ms`,
       screenshot: screen,
     };
-  }
-
-  // Handle workspace trust dialog if it appeared (fresh temp dir triggers this).
-  // "1. Yes, I trust this folder" is pre-selected — just press Enter.
-  if (/trust this folder|safety check/i.test(screen)) {
-    log("  Workspace trust dialog detected — selecting '1. Yes, I trust this folder'");
-    await sendKey(claudeTarget, "Enter");
-    const readyResult = await waitFor(claudeTarget, /❯/, TIMEOUT_CLAUDE_START);
-    if (!readyResult.found) {
-      return {
-        name,
-        status: "FAIL",
-        detail: "Claude did not reach prompt after accepting trust dialog",
-        screenshot: readyResult.screen,
-      };
-    }
   }
 
   // Auto-split: if running inside tmux, move the Claude pane into the current window.
