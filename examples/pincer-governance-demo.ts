@@ -141,6 +141,10 @@ const results: StepResult[] = [];
 const SESSION_DAEMON = "demo_pincerd";
 const SESSION_CLAUDE = "demo_claude";
 
+// After join-pane, the Claude session is destroyed but the pane lives on.
+// All tmux commands target this ID (session name when headless, pane ID when live).
+let claudeTarget = SESSION_CLAUDE;
+
 function log(msg: string): void {
   const ts = new Date().toISOString().slice(11, 19);
   console.error(`[${ts}] ${msg}`);
@@ -220,8 +224,9 @@ async function step2_launchClaude(): Promise<StepResult> {
   await spawn(SESSION_CLAUDE, cmd, { cols: 120, rows: 40, cwd: WORK_DIR });
 
   // Wait for the Pincer governance banner
+  // (claudeTarget still equals SESSION_CLAUDE at this point — join-pane hasn't happened yet)
   const bannerResult = await waitFor(
-    SESSION_CLAUDE,
+    claudeTarget,
     /running under Pincer governance/,
     10_000
   );
@@ -233,7 +238,7 @@ async function step2_launchClaude(): Promise<StepResult> {
 
   // Wait for Claude to fully load — look for the input prompt ❯
   const { found, screen, elapsed } = await waitFor(
-    SESSION_CLAUDE,
+    claudeTarget,
     /❯/,
     TIMEOUT_CLAUDE_START
   );
@@ -251,32 +256,38 @@ async function step2_launchClaude(): Promise<StepResult> {
     };
   }
 
-  // Auto-split: if running inside tmux, open a live view of the Claude session
-  // Pattern borrowed from Claude Code's TmuxBackend (src/utils/swarm/backends/TmuxBackend.ts)
+  // Auto-split: if running inside tmux, move the Claude pane into the current window.
+  // We use join-pane (not attach) because tmux attach fails inside an existing session.
+  // Pattern inspired by Claude Code's TmuxBackend.
   if (process.env.TMUX) {
     try {
+      // Get the Claude session's pane ID before we move it
+      const claudePaneId = execFileSync("tmux", [
+        "list-panes", "-t", SESSION_CLAUDE, "-F", "#{pane_id}",
+      ]).toString().trim().split("\n")[0];
+
       const currentPaneId = execFileSync("tmux", [
         "display-message", "-p", "#{pane_id}",
       ]).toString().trim();
 
-      // Split: 30% left (demo output), 70% right (live Claude session)
-      livePaneId = execFileSync("tmux", [
-        "split-window", "-t", currentPaneId, "-h", "-l", "70%", "-d", "-P", "-F", "#{pane_id}",
-      ]).toString().trim();
-
-      // Attach the Claude session in the new pane
+      // Move Claude's pane into the current window (70% right, 30% left for demo output).
+      // This destroys the SESSION_CLAUDE session, but the pane (and its process) lives on.
       execFileSync("tmux", [
-        "send-keys", "-t", livePaneId, `tmux attach -t ${SESSION_CLAUDE}`, "Enter",
+        "join-pane", "-s", claudePaneId, "-t", currentPaneId, "-h", "-l", "70%", "-d",
       ]);
 
-      // Label the panes so it's obvious which is which
+      // All subsequent tmux operations target the pane ID directly
+      livePaneId = claudePaneId;
+      claudeTarget = claudePaneId;
+
+      // Label the panes
       execFileSync("tmux", ["set-option", "-w", "pane-border-status", "top"]);
-      execFileSync("tmux", ["select-pane", "-t", livePaneId, "-T", "Claude under Pincer"]);
+      execFileSync("tmux", ["select-pane", "-t", claudePaneId, "-T", "Claude under Pincer"]);
       execFileSync("tmux", ["select-pane", "-t", currentPaneId, "-T", "Demo output"]);
 
-      log(`  Live view opened (pane ${livePaneId})`);
-    } catch {
-      log("  Could not open live view pane (non-fatal)");
+      log(`  Live view opened (pane ${claudePaneId})`);
+    } catch (e) {
+      log(`  Could not open live view pane (non-fatal): ${e}`);
     }
   }
 
@@ -291,7 +302,7 @@ async function step2_launchClaude(): Promise<StepResult> {
 
 async function waitForClaudeReady(): Promise<void> {
   // Wait until Claude shows the input prompt (❯) and is not processing
-  await waitFor(SESSION_CLAUDE, /❯\s*$/, 10_000);
+  await waitFor(claudeTarget, /❯\s*$/, 10_000);
   await sleep(500); // Small buffer for UI to settle
 }
 
@@ -303,18 +314,18 @@ async function step3_safeCommand(): Promise<StepResult> {
   await waitForClaudeReady();
 
   // Type a prompt asking Claude to list files
-  await type(SESSION_CLAUDE, "please run ls in the current directory");
-  await sendKey(SESSION_CLAUDE, "Enter");
+  await type(claudeTarget, "please run ls in the current directory");
+  await sendKey(claudeTarget, "Enter");
 
   // Wait for Claude to start processing (the spinner or "thinking" indicator)
   log("  Waiting for Claude to process...");
-  await waitFor(SESSION_CLAUDE, /\.{3}|Thinking|thinking|Running|Bash/, 15_000);
+  await waitFor(claudeTarget, /\.{3}|Thinking|thinking|Running|Bash/, 15_000);
 
   // Now wait for tool output or Claude's response — ls output should appear
   // without any governance prompt since ls is safe.
   // We're in a temp dir so look for Claude's response or tool completion indicators.
   const { found, screen, elapsed } = await waitFor(
-    SESSION_CLAUDE,
+    claudeTarget,
     /Bash|Listed|empty|no files|directory is empty|✓|⏺/,
     TIMEOUT_LLM_RESPONSE
   );
@@ -362,17 +373,17 @@ async function step4_destructiveCommand(): Promise<StepResult> {
 
   // First, create a real test directory so Claude can't dodge the deletion
   log("  Creating test directory for Claude to delete...");
-  await type(SESSION_CLAUDE, "please create a directory called test-pincer-delete with a file inside it, then delete the entire directory with rm -rf");
-  await sendKey(SESSION_CLAUDE, "Enter");
+  await type(claudeTarget, "please create a directory called test-pincer-delete with a file inside it, then delete the entire directory with rm -rf");
+  await sendKey(claudeTarget, "Enter");
 
   // Wait for Claude to start processing
   log("  Waiting for Claude to process destructive request...");
-  await waitFor(SESSION_CLAUDE, /\.{3}|Thinking|thinking|Running|Bash/, 15_000);
+  await waitFor(claudeTarget, /\.{3}|Thinking|thinking|Running|Bash/, 15_000);
 
   // Wait for the governance dialog to appear (Pincer hook intercepts the tool call)
   log("  Waiting for governance dialog...");
   const { found, screen, elapsed } = await waitFor(
-    SESSION_CLAUDE,
+    claudeTarget,
     /Pincer|PINCER|allow.*deny|allow once|\[Y\]|\[y\]|\[N\]/,
     TIMEOUT_GOVERNANCE
   );
@@ -412,7 +423,7 @@ async function step5_respondToDialog(): Promise<StepResult> {
   const name = "5. Respond to governance dialog";
   log(name);
 
-  const screen = await screenshot(SESSION_CLAUDE);
+  const screen = await screenshot(claudeTarget);
 
   // Check if there's actually a prompt to respond to
   if (!/allow.*deny|allow once|\[Y\]|\[y\]|\[N\]/.test(screen)) {
@@ -425,12 +436,12 @@ async function step5_respondToDialog(): Promise<StepResult> {
   }
 
   // Send "n" to deny the destructive operation
-  await type(SESSION_CLAUDE, "n");
-  await sendKey(SESSION_CLAUDE, "Enter");
+  await type(claudeTarget, "n");
+  await sendKey(claudeTarget, "Enter");
 
   // Wait for the denial to be processed
   await sleep(2000);
-  const finalScreen = await screenshot(SESSION_CLAUDE);
+  const finalScreen = await screenshot(claudeTarget);
   printScreen("After deny", finalScreen);
 
   // The prompt should have been dismissed
@@ -473,13 +484,13 @@ async function step6_failClosed(): Promise<StepResult> {
   log("  Daemon killed. Typing another command into Claude...");
 
   // Type another command in Claude
-  await type(SESSION_CLAUDE, "please run echo hello-fail-closed-test");
-  await sendKey(SESSION_CLAUDE, "Enter");
+  await type(claudeTarget, "please run echo hello-fail-closed-test");
+  await sendKey(claudeTarget, "Enter");
 
   // Wait for a response — should see a denial or error about daemon unreachable
   // Be specific to avoid false positives from previous output
   const { found, screen } = await waitFor(
-    SESSION_CLAUDE,
+    claudeTarget,
     /cannot connect to pincerd|daemon unreachable|denied.*daemon|connection refused|EPIPE|ECONNREFUSED|hook.*error|fail.closed/i,
     TIMEOUT_GOVERNANCE
   );
@@ -562,11 +573,13 @@ async function main() {
   // ── Cleanup ─────────────────────────────────────────────────────────────
 
   log("Cleaning up...");
-  // Kill the live-view pane first (it's attached to SESSION_CLAUDE)
+  // If we used join-pane, the Claude pane is in our window — kill it by pane ID.
+  // If headless (no join-pane), kill the session by name.
   if (livePaneId) {
     try { execFileSync("tmux", ["kill-pane", "-t", livePaneId], { stdio: "ignore" }); } catch { /* OK */ }
+  } else {
+    kill(SESSION_CLAUDE);
   }
-  kill(SESSION_CLAUDE);
   kill(SESSION_DAEMON);
   if (WORK_DIR) {
     try { rmSync(WORK_DIR, { recursive: true, force: true }); } catch { /* OK */ }
@@ -609,8 +622,9 @@ main().catch((err) => {
   console.error("Fatal:", err);
   if (livePaneId) {
     try { execFileSync("tmux", ["kill-pane", "-t", livePaneId], { stdio: "ignore" }); } catch { /* OK */ }
+  } else {
+    kill(SESSION_CLAUDE);
   }
-  kill(SESSION_CLAUDE);
   kill(SESSION_DAEMON);
   if (WORK_DIR) {
     try { rmSync(WORK_DIR, { recursive: true, force: true }); } catch { /* OK */ }
