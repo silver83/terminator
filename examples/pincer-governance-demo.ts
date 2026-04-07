@@ -331,6 +331,9 @@ async function step2_launchClaude(): Promise<StepResult> {
       execFileSync("tmux", ["select-pane", "-t", claudePaneId, "-T", "Claude under Pincer"]);
       execFileSync("tmux", ["select-pane", "-t", currentPaneId, "-T", "Demo output"]);
 
+      // Clear the left pane — join-pane leaves residual Claude output behind
+      process.stderr.write("\x1b[2J\x1b[H");
+
       log(`  Live view opened (pane ${claudePaneId})`);
     } catch (e) {
       log(`  Could not open live view pane (non-fatal): ${e}`);
