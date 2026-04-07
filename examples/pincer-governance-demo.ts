@@ -266,9 +266,9 @@ async function step2_launchClaude(): Promise<StepResult> {
         "list-panes", "-t", SESSION_CLAUDE, "-F", "#{pane_id}",
       ]).toString().trim().split("\n")[0];
 
-      const currentPaneId = execFileSync("tmux", [
-        "display-message", "-p", "#{pane_id}",
-      ]).toString().trim();
+      // $TMUX_PANE is most reliable; fall back to display-message
+      const currentPaneId = process.env.TMUX_PANE
+        ?? execFileSync("tmux", ["display-message", "-p", "#{pane_id}"]).toString().trim();
 
       // Move Claude's pane into the current window (70% right, 30% left for demo output).
       // This destroys the SESSION_CLAUDE session, but the pane (and its process) lives on.
@@ -279,6 +279,9 @@ async function step2_launchClaude(): Promise<StepResult> {
       // All subsequent tmux operations target the pane ID directly
       livePaneId = claudePaneId;
       claudeTarget = claudePaneId;
+
+      // Brief pause for layout to settle (Claude Code uses 200ms for shell init)
+      await sleep(200);
 
       // Label the panes
       execFileSync("tmux", ["set-option", "-w", "pane-border-status", "top"]);
