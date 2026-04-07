@@ -252,16 +252,28 @@ async function step2_launchClaude(): Promise<StepResult> {
   }
 
   // Auto-split: if running inside tmux, open a live view of the Claude session
+  // Pattern borrowed from Claude Code's TmuxBackend (src/utils/swarm/backends/TmuxBackend.ts)
   if (process.env.TMUX) {
     try {
-      // Split horizontally, attach to the Claude session read-only in the new pane
-      const { stdout } = await execFileAsync("tmux", [
-        "split-window", "-h", "-d", "-P", "-F", "#{pane_id}",
-        "tmux", "attach", "-t", SESSION_CLAUDE, "-r",
+      const currentPaneId = execFileSync("tmux", [
+        "display-message", "-p", "#{pane_id}",
+      ]).toString().trim();
+
+      // Split: 30% left (demo output), 70% right (live Claude session)
+      livePaneId = execFileSync("tmux", [
+        "split-window", "-t", currentPaneId, "-h", "-l", "70%", "-d", "-P", "-F", "#{pane_id}",
+      ]).toString().trim();
+
+      // Attach the Claude session in the new pane
+      execFileSync("tmux", [
+        "send-keys", "-t", livePaneId, `tmux attach -t ${SESSION_CLAUDE}`, "Enter",
       ]);
-      livePaneId = stdout.trim();
-      // Give 60% width to demo output, 40% to live view
-      await tmux("resize-pane", "-R", "20");
+
+      // Label the panes so it's obvious which is which
+      execFileSync("tmux", ["set-option", "-w", "pane-border-status", "top"]);
+      execFileSync("tmux", ["select-pane", "-t", livePaneId, "-T", "Claude under Pincer"]);
+      execFileSync("tmux", ["select-pane", "-t", currentPaneId, "-T", "Demo output"]);
+
       log(`  Live view opened (pane ${livePaneId})`);
     } catch {
       log("  Could not open live view pane (non-fatal)");
