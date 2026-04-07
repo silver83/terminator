@@ -119,6 +119,26 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/** Wait for a numbered menu to appear, then select an option by sending arrow keys + Enter. */
+async function waitForMenuAndSelect(
+  id: string,
+  detectPattern: RegExp,
+  choice: number, // 1-based menu index (1 = first item, already selected)
+  timeoutMs: number
+): Promise<{ found: boolean; screen: string; elapsed: number }> {
+  const result = await waitFor(id, detectPattern, timeoutMs);
+  if (!result.found) return result;
+
+  // Navigate: choice 1 is pre-selected (❯), each additional choice needs one Down arrow
+  for (let i = 1; i < choice; i++) {
+    await sendKey(id, "Down");
+    await sleep(100);
+  }
+  await sendKey(id, "Enter");
+
+  return result;
+}
+
 function kill(id: string): void {
   try {
     execFileSync("tmux", ["kill-session", "-t", id], { stdio: "ignore" });
@@ -238,10 +258,10 @@ async function step2_launchClaude(): Promise<StepResult> {
     printScreen("Pincer banner", bannerResult.screen);
   }
 
-  // Wait for Claude's input prompt — once ❯ appears, Claude is ready
+  // Wait for either the ❯ prompt (ready) or the workspace trust dialog
   const { found, screen, elapsed } = await waitFor(
     claudeTarget,
-    /❯/,
+    /❯|trust this folder|safety check/i,
     TIMEOUT_CLAUDE_START
   );
 
@@ -253,6 +273,22 @@ async function step2_launchClaude(): Promise<StepResult> {
       detail: `Claude did not start within ${TIMEOUT_CLAUDE_START}ms`,
       screenshot: screen,
     };
+  }
+
+  // Handle workspace trust dialog if it appeared (fresh temp dir triggers this).
+  // "1. Yes, I trust this folder" is pre-selected — just press Enter.
+  if (/trust this folder|safety check/i.test(screen)) {
+    log("  Workspace trust dialog detected — selecting '1. Yes, I trust this folder'");
+    await sendKey(claudeTarget, "Enter");
+    const readyResult = await waitFor(claudeTarget, /❯/, TIMEOUT_CLAUDE_START);
+    if (!readyResult.found) {
+      return {
+        name,
+        status: "FAIL",
+        detail: "Claude did not reach prompt after accepting trust dialog",
+        screenshot: readyResult.screen,
+      };
+    }
   }
 
   // Auto-split: if running inside tmux, move the Claude pane into the current window.
@@ -436,12 +472,9 @@ async function step5_respondToDialog(): Promise<StepResult> {
     };
   }
 
-  // The dialog shows "1. Yes" / "2. No" — navigate to "2. No" and press Enter to deny.
-  // The cursor starts on "1. Yes" (❯), so press Down then Enter to select No.
-  log("  Selecting '2. No' to deny the destructive operation...");
-  await sendKey(claudeTarget, "Down");
-  await sleep(200);
-  await sendKey(claudeTarget, "Enter");
+  // Select "2. No" to deny the destructive operation
+  log("  Selecting '2. No' to deny...");
+  await waitForMenuAndSelect(claudeTarget, /Do you want to proceed/, 2, 5_000);
 
   // Wait for the dialog to dismiss and Claude to show the denial result
   const { found: dismissed, screen: finalScreen } = await waitFor(
