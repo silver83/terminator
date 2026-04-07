@@ -22,14 +22,15 @@ describe("terminator MCP E2E", () => {
     await client.connect(transport);
   });
 
-  it("lists 8 tools", async () => {
+  it("lists 9 tools", async () => {
     const { tools } = await client.listTools();
-    assert.equal(tools.length, 8, `Expected 8 tools, got ${tools.length}`);
+    assert.equal(tools.length, 9, `Expected 9 tools, got ${tools.length}`);
 
     const names = tools.map((t) => t.name).sort();
     assert.deepEqual(names, [
       "terminal_assert",
       "terminal_close",
+      "terminal_export",
       "terminal_screenshot",
       "terminal_send_key",
       "terminal_spawn",
@@ -159,6 +160,30 @@ describe("terminator MCP E2E", () => {
     }
   });
 
+  it("exports asciicast before close", async () => {
+    const result = await client.callTool({
+      name: "terminal_export",
+      arguments: { session_id: sessionId },
+    });
+
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    assert.ok(data.events > 0, "Cast should have recorded events");
+    assert.ok(typeof data.cast === "string", "Cast should be a string");
+
+    // Parse the cast format
+    const lines = data.cast.trim().split("\n");
+    const header = JSON.parse(lines[0]);
+    assert.equal(header.version, 2);
+    assert.equal(header.width, 80);
+    assert.equal(header.height, 24);
+
+    // Should have at least one event after the header
+    assert.ok(lines.length > 1, "Cast should have events beyond the header");
+    const firstEvent = JSON.parse(lines[1]);
+    assert.ok(Array.isArray(firstEvent), "Events should be arrays");
+    assert.equal(firstEvent.length, 3, "Events should have [time, type, data]");
+  });
+
   it("closes the session", async () => {
     const result = await client.callTool({
       name: "terminal_close",
@@ -167,6 +192,16 @@ describe("terminator MCP E2E", () => {
 
     const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
     assert.deepEqual(data, { ok: true });
+  });
+
+  it("exports asciicast after close", async () => {
+    const result = await client.callTool({
+      name: "terminal_export",
+      arguments: { session_id: sessionId },
+    });
+
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    assert.ok(data.events > 0, "Cast should still be available after close");
   });
 
   it("screenshot on closed session returns error", async () => {

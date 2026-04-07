@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { Recorder } from "./recorder.js";
+import { AsciicastWriter } from "./asciicast.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -22,9 +23,11 @@ interface TerminalSession {
   cols: number;
   rows: number;
   createdAt: number;
+  cast: AsciicastWriter;
 }
 
 const sessions = new Map<string, TerminalSession>();
+const closedSessions = new Map<string, TerminalSession>();
 
 // ── Trace recorder ─────────────────────────────────────────────────────────
 
@@ -108,12 +111,15 @@ async function terminalSpawn(params: {
 
   await tmux(...tmuxArgs);
 
+  const cast = new AsciicastWriter(cols, rows);
+
   const session: TerminalSession = {
     id,
     command: fullCmd,
     cols,
     rows,
     createdAt: Date.now(),
+    cast,
   };
   sessions.set(id, session);
 
@@ -127,13 +133,14 @@ async function terminalType(params: {
   text: string;
   delay_ms?: number;
 }): Promise<{ ok: true }> {
-  await requireAliveSession(params.session_id);
+  const session = await requireAliveSession(params.session_id);
 
   // tmux send-keys with -l flag sends literal characters (no key name interpretation)
   // We send the whole string at once — tmux handles it correctly
   await tmux("send-keys", "-t", params.session_id, "-l", params.text);
 
   recorder.record({ event: "type", session: params.session_id, text: params.text });
+  session.cast.input(params.text);
 
   // Optional delay to let the application process input
   if (params.delay_ms && params.delay_ms > 0) {
@@ -147,7 +154,7 @@ async function terminalSendKey(params: {
   session_id: string;
   key: string;
 }): Promise<{ ok: true }> {
-  await requireAliveSession(params.session_id);
+  const session = await requireAliveSession(params.session_id);
 
   // Map friendly key names to tmux key names
   const keyMap: Record<string, string> = {
@@ -188,6 +195,18 @@ async function terminalSendKey(params: {
 
   recorder.record({ event: "send_key", session: params.session_id, key: params.key });
 
+  // Map keys to ANSI sequences for asciicast
+  const keyAnsi: Record<string, string> = {
+    enter: "\r\n", return: "\r\n", tab: "\t", space: " ",
+    backspace: "\x7f", escape: "\x1b", up: "\x1b[A", down: "\x1b[B",
+    left: "\x1b[D", right: "\x1b[C",
+    "ctrl-c": "\x03", "ctrl-d": "\x04", "ctrl-z": "\x1a",
+    "ctrl-l": "\x0c", "ctrl-a": "\x01", "ctrl-e": "\x05",
+    "ctrl-k": "\x0b", "ctrl-u": "\x15", "ctrl-w": "\x17",
+    "ctrl-r": "\x12", "ctrl-p": "\x10", "ctrl-n": "\x0e",
+  };
+  session.cast.input(keyAnsi[params.key.toLowerCase()] ?? params.key);
+
   return { ok: true };
 }
 
@@ -205,6 +224,7 @@ async function terminalScreenshot(params: {
     lines: trimmed.split("\n").length,
     content: trimmed,
   });
+  session.cast.frame(trimmed);
 
   return {
     screen: trimmed,
@@ -219,7 +239,7 @@ async function terminalWaitFor(params: {
   timeout_ms?: number;
   interval_ms?: number;
 }): Promise<{ found: boolean; screen: string; elapsed_ms: number }> {
-  await requireAliveSession(params.session_id);
+  const session = await requireAliveSession(params.session_id);
 
   const timeout = params.timeout_ms ?? 10000;
   const interval = params.interval_ms ?? 200;
@@ -237,15 +257,17 @@ async function terminalWaitFor(params: {
     const screen = await tmux("capture-pane", "-t", params.session_id, "-p");
     if (regex.test(screen)) {
       const wait_ms = Date.now() - start;
+      const trimmed = screen.trimEnd();
       recorder.record({
         event: "wait_for_found",
         session: params.session_id,
         pattern: params.pattern,
         wait_ms,
       });
+      session.cast.frame(trimmed);
       return {
         found: true,
-        screen: screen.trimEnd(),
+        screen: trimmed,
         elapsed_ms: wait_ms,
       };
     }
@@ -255,6 +277,7 @@ async function terminalWaitFor(params: {
   // One final check
   const screen = await tmux("capture-pane", "-t", params.session_id, "-p");
   const found = regex.test(screen);
+  const trimmedFinal = screen.trimEnd();
   const wait_ms = Date.now() - start;
   recorder.record({
     event: found ? "wait_for_found" : "wait_for_timeout",
@@ -262,9 +285,10 @@ async function terminalWaitFor(params: {
     pattern: params.pattern,
     wait_ms,
   });
+  session.cast.frame(trimmedFinal);
   return {
     found,
-    screen: screen.trimEnd(),
+    screen: trimmedFinal,
     elapsed_ms: wait_ms,
   };
 }
@@ -317,8 +341,31 @@ async function terminalClose(params: {
   }
 
   recorder.record({ event: "close", session: params.session_id });
+  // Preserve in closedSessions so asciicast can still be exported after close
+  closedSessions.set(params.session_id, session);
   sessions.delete(params.session_id);
   return { ok: true };
+}
+
+async function terminalExport(params: {
+  session_id: string;
+  save_path?: string;
+}): Promise<{ events: number; cast: string; saved_to?: string }> {
+  // Look up session (may be closed — check closed sessions map too)
+  const session = sessions.get(params.session_id) ?? closedSessions.get(params.session_id);
+  if (!session) {
+    throw new Error(`Unknown session: ${params.session_id}. Export must happen before or immediately after close.`);
+  }
+
+  const cast = session.cast.toCast();
+
+  let saved_to: string | undefined;
+  if (params.save_path) {
+    writeFileSync(params.save_path, cast);
+    saved_to = params.save_path;
+  }
+
+  return { events: session.cast.eventCount, cast, saved_to };
 }
 
 async function terminalTrace(params: {
@@ -503,6 +550,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "terminal_export",
+      description:
+        "Export the session recording as an asciicast v2 (.cast) file, playable in asciinema-player or asciinema.org. Recording happens automatically — every type, send_key, and screenshot is captured with timing.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: {
+            type: "string",
+            description: "The session ID to export (works for open or recently closed sessions)",
+          },
+          save_path: {
+            type: "string",
+            description: "File path to save the .cast file (optional — omit to get content inline)",
+          },
+        },
+        required: ["session_id"],
+      },
+    },
+    {
       name: "terminal_trace",
       description:
         "Retrieve the recorded trace of all terminal operations since the server started. Each event has a t_ms timestamp, event type, session ID, and operation-specific fields. Useful for debugging timing issues, sharing with AI agents for analysis, or saving as a test artifact.",
@@ -556,6 +622,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "terminal_close": {
         const result = await terminalClose(args as Parameters<typeof terminalClose>[0]);
         return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      }
+      case "terminal_export": {
+        const result = await terminalExport(args as Parameters<typeof terminalExport>[0]);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
       case "terminal_trace": {
         const result = await terminalTrace(args as Parameters<typeof terminalTrace>[0]);

@@ -3,679 +3,177 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Terminator Trace Viewer</title>
+<title>Terminator Trace Player</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/asciinema-player@3/dist/bundle/asciinema-player.css">
 <style>
   :root {
     --bg: #1a1a2e;
     --surface: #16213e;
-    --surface2: #0f3460;
-    --accent: #e94560;
-    --accent2: #533483;
     --text: #eee;
     --text-dim: #8892b0;
-    --term-bg: #0d1117;
-    --term-text: #c9d1d9;
-    --slow: #f0883e;
-    --pass: #3fb950;
-    --fail: #f85149;
-    --timeout: #f0883e;
+    --accent: #e94560;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     background: var(--bg);
     color: var(--text);
-    height: 100vh;
+    min-height: 100vh;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    align-items: center;
   }
-
-  /* ── Header ─────────────────────────── */
   header {
+    width: 100%;
+    padding: 20px 24px;
+    background: var(--surface);
+    border-bottom: 1px solid rgba(255,255,255,0.06);
     display: flex;
     align-items: center;
     gap: 16px;
-    padding: 12px 20px;
-    background: var(--surface);
-    border-bottom: 1px solid var(--surface2);
-    flex-shrink: 0;
   }
-  header h1 {
-    font-size: 16px;
-    font-weight: 600;
-    white-space: nowrap;
-  }
-  header .meta {
-    font-size: 13px;
-    color: var(--text-dim);
-  }
-  #file-input {
+  header h1 { font-size: 18px; font-weight: 600; }
+  header .subtitle { font-size: 13px; color: var(--text-dim); }
+  .controls {
     margin-left: auto;
+    display: flex;
+    gap: 12px;
+    align-items: center;
   }
   .btn {
-    background: var(--surface2);
+    background: rgba(255,255,255,0.08);
     color: var(--text);
-    border: 1px solid rgba(255,255,255,0.1);
-    padding: 6px 14px;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 13px;
-    transition: background 0.15s;
-  }
-  .btn:hover { background: var(--accent2); }
-
-  /* ── Drop zone (initial state) ────── */
-  #drop-zone {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 16px;
-  }
-  #drop-zone h2 { font-size: 24px; font-weight: 600; }
-  #drop-zone p { color: var(--text-dim); font-size: 14px; }
-  #drop-zone.hidden { display: none; }
-
-  /* ── Main layout ────────────────────── */
-  #main {
-    display: none;
-    flex: 1;
-    overflow: hidden;
-  }
-  #main.active {
-    display: flex;
-  }
-
-  /* ── Terminal panel ─────────────────── */
-  #terminal-panel {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-  }
-  #terminal {
-    flex: 1;
-    background: var(--term-bg);
-    padding: 16px;
-    overflow: auto;
-    position: relative;
-  }
-  #terminal pre {
-    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Menlo', monospace;
-    font-size: 13px;
-    line-height: 1.4;
-    color: var(--term-text);
-    white-space: pre;
-    margin: 0;
-  }
-  #terminal .no-content {
-    color: var(--text-dim);
-    font-style: italic;
-    font-family: -apple-system, sans-serif;
-    font-size: 14px;
-  }
-
-  /* Event annotation overlay on terminal */
-  #event-annotation {
-    position: absolute;
-    bottom: 12px;
-    left: 16px;
-    right: 16px;
-    padding: 8px 12px;
-    background: rgba(22, 33, 62, 0.92);
-    border: 1px solid var(--surface2);
-    border-radius: 6px;
-    font-size: 12px;
-    font-family: 'SF Mono', monospace;
-    color: var(--text);
-    backdrop-filter: blur(4px);
-  }
-  #event-annotation.hidden { display: none; }
-  #event-annotation .label {
-    font-weight: 600;
-    margin-right: 8px;
-  }
-
-  /* ── Event sidebar ──────────────────── */
-  #sidebar {
-    width: 340px;
-    background: var(--surface);
-    border-left: 1px solid var(--surface2);
-    display: flex;
-    flex-direction: column;
-    flex-shrink: 0;
-  }
-  #sidebar h3 {
-    padding: 12px 16px;
-    font-size: 13px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-dim);
-    border-bottom: 1px solid var(--surface2);
-    flex-shrink: 0;
-  }
-  #event-list {
-    flex: 1;
-    overflow-y: auto;
-  }
-  .event-item {
+    border: 1px solid rgba(255,255,255,0.12);
     padding: 8px 16px;
-    cursor: pointer;
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    border-bottom: 1px solid rgba(255,255,255,0.04);
-    transition: background 0.1s;
-    font-size: 12px;
-  }
-  .event-item:hover { background: rgba(255,255,255,0.04); }
-  .event-item.active {
-    background: var(--surface2);
-    border-left: 3px solid var(--accent);
-    padding-left: 13px;
-  }
-  .event-item .time {
-    color: var(--text-dim);
-    font-family: 'SF Mono', monospace;
-    white-space: nowrap;
-    min-width: 60px;
-  }
-  .event-item .badge {
-    display: inline-block;
-    padding: 1px 6px;
-    border-radius: 3px;
-    font-size: 10px;
-    font-weight: 600;
-    font-family: 'SF Mono', monospace;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-  .badge-spawn { background: var(--accent2); color: white; }
-  .badge-type { background: #1f6feb; color: white; }
-  .badge-send_key { background: #1f6feb; color: white; }
-  .badge-screenshot { background: #388bfd; color: white; }
-  .badge-wait_for_start { background: var(--surface2); color: var(--text-dim); }
-  .badge-wait_for_found { background: var(--pass); color: #000; }
-  .badge-wait_for_timeout { background: var(--timeout); color: #000; }
-  .badge-assert_pass { background: var(--pass); color: #000; }
-  .badge-assert_fail { background: var(--fail); color: white; }
-  .badge-close { background: #6e7681; color: white; }
-  .event-item .detail {
-    color: var(--text-dim);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    flex: 1;
-    min-width: 0;
-  }
-  .event-item .wait-tag {
-    color: var(--slow);
-    font-weight: 600;
-    white-space: nowrap;
-  }
-  .event-item .wait-tag.fast { color: var(--pass); }
-
-  /* ── Playback controls ──────────────── */
-  #controls {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 20px;
-    background: var(--surface);
-    border-top: 1px solid var(--surface2);
-    flex-shrink: 0;
-  }
-  #controls button {
-    background: none;
-    border: 1px solid rgba(255,255,255,0.15);
-    color: var(--text);
-    width: 36px;
-    height: 36px;
     border-radius: 6px;
     cursor: pointer;
-    font-size: 16px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    font-size: 13px;
     transition: background 0.15s;
   }
-  #controls button:hover { background: var(--surface2); }
-  #controls button:disabled { opacity: 0.3; cursor: default; }
-  #scrub-container {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    gap: 10px;
+  .btn:hover { background: rgba(255,255,255,0.14); }
+  #drop-zone {
+    margin-top: 80px;
+    padding: 60px 40px;
+    border: 2px dashed rgba(255,255,255,0.15);
+    border-radius: 12px;
+    text-align: center;
+    max-width: 560px;
+    width: 90%;
   }
-  #scrub {
-    flex: 1;
-    -webkit-appearance: none;
-    appearance: none;
-    height: 6px;
+  #drop-zone h2 { font-size: 22px; margin-bottom: 12px; }
+  #drop-zone p { color: var(--text-dim); font-size: 14px; margin-bottom: 8px; }
+  #drop-zone code {
+    background: rgba(255,255,255,0.06);
+    padding: 2px 6px;
     border-radius: 3px;
-    background: var(--surface2);
-    outline: none;
-  }
-  #scrub::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    background: var(--accent);
-    cursor: pointer;
-  }
-  #scrub::-moz-range-thumb {
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    background: var(--accent);
-    cursor: pointer;
-    border: none;
-  }
-  #position {
     font-size: 12px;
-    font-family: 'SF Mono', monospace;
-    color: var(--text-dim);
-    white-space: nowrap;
-    min-width: 120px;
-    text-align: right;
   }
-  #speed-label {
-    font-size: 11px;
-    color: var(--text-dim);
-    white-space: nowrap;
+  #drop-zone.hidden { display: none; }
+  #player-container {
+    width: 100%;
+    max-width: 960px;
+    padding: 24px;
+    display: none;
   }
+  #player-container.active { display: block; }
+  #player-container .meta {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 12px;
+    text-align: center;
+  }
+  /* Override asciinema-player background to match our theme */
+  .ap-wrapper { border-radius: 8px; overflow: hidden; }
 </style>
 </head>
 <body>
 
 <header>
-  <h1>Terminator Trace Viewer</h1>
-  <span id="trace-meta" class="meta"></span>
-  <input type="file" id="file-input" accept=".json" class="btn">
+  <h1>Terminator</h1>
+  <span class="subtitle">Trace Player</span>
+  <div class="controls">
+    <input type="file" id="file-input" accept=".cast,.json" class="btn">
+  </div>
 </header>
 
 <div id="drop-zone">
-  <h2>Load a Terminator trace</h2>
-  <p>Drag & drop a trace JSON file, use the file picker above, or add <code>?url=...</code> to the URL</p>
+  <h2>Load a recording</h2>
+  <p>Drag & drop a <code>.cast</code> file, use the file picker, or add <code>?url=path.cast</code></p>
+  <p style="margin-top: 16px; font-size: 12px; color: var(--text-dim);">
+    Export recordings with <code>terminal_export</code> in Terminator
+  </p>
 </div>
 
-<div id="main">
-  <div id="terminal-panel">
-    <div id="terminal">
-      <pre id="term-content"></pre>
-      <div id="event-annotation" class="hidden">
-        <span class="label"></span>
-        <span class="value"></span>
-      </div>
-    </div>
-  </div>
-  <div id="sidebar">
-    <h3>Events (<span id="event-count">0</span>)</h3>
-    <div id="event-list"></div>
-  </div>
+<div id="player-container">
+  <div id="player"></div>
+  <div id="meta" class="meta"></div>
 </div>
 
-<div id="controls">
-  <button id="btn-start" title="Jump to start">&#x23EE;</button>
-  <button id="btn-prev" title="Previous event (Left arrow)">&#x23F4;</button>
-  <button id="btn-play" title="Play / Pause (Space)">&#x25B6;</button>
-  <button id="btn-next" title="Next event (Right arrow)">&#x23F5;</button>
-  <button id="btn-end" title="Jump to end">&#x23ED;</button>
-  <div id="scrub-container">
-    <input type="range" id="scrub" min="0" max="0" value="0">
-  </div>
-  <span id="position">0 / 0</span>
-  <span id="speed-label">1x</span>
-  <button id="btn-speed" title="Cycle speed">&#x23E9;</button>
-</div>
-
+<script src="https://cdn.jsdelivr.net/npm/asciinema-player@3/dist/bundle/asciinema-player.min.js"></script>
 <script>
 (function() {
-  // ── State ──────────────────────────────────────────────────────────
-  let trace = [];
-  let currentIndex = -1;
-  let playing = false;
-  let playTimer = null;
-  let speed = 1; // multiplier
-  const speeds = [0.5, 1, 2, 4, 8];
-  let speedIdx = 1;
-
-  // ── DOM refs ───────────────────────────────────────────────────────
   const dropZone = document.getElementById('drop-zone');
-  const mainEl = document.getElementById('main');
-  const termContent = document.getElementById('term-content');
-  const annotation = document.getElementById('event-annotation');
-  const eventList = document.getElementById('event-list');
-  const eventCount = document.getElementById('event-count');
-  const traceMeta = document.getElementById('trace-meta');
-  const scrub = document.getElementById('scrub');
-  const position = document.getElementById('position');
-  const speedLabel = document.getElementById('speed-label');
+  const playerContainer = document.getElementById('player-container');
+  const playerEl = document.getElementById('player');
+  const metaEl = document.getElementById('meta');
   const fileInput = document.getElementById('file-input');
 
-  const btnStart = document.getElementById('btn-start');
-  const btnPrev = document.getElementById('btn-prev');
-  const btnPlay = document.getElementById('btn-play');
-  const btnNext = document.getElementById('btn-next');
-  const btnEnd = document.getElementById('btn-end');
-  const btnSpeed = document.getElementById('btn-speed');
-
-  // ── Load trace ─────────────────────────────────────────────────────
-  function loadTrace(data) {
-    // Accept either raw array or {trace: [...]} wrapper
-    if (Array.isArray(data)) {
-      trace = data;
-    } else if (data && Array.isArray(data.trace)) {
-      trace = data.trace;
-    } else if (data && Array.isArray(data.steps)) {
-      // Support the demo report format too
-      trace = data.steps;
-    } else {
-      alert('Invalid trace format. Expected a JSON array of events or {trace: [...]}');
-      return;
-    }
-
-    if (trace.length === 0) {
-      alert('Trace is empty.');
-      return;
-    }
-
-    // Build UI
+  function loadCast(content, filename) {
     dropZone.classList.add('hidden');
-    mainEl.classList.add('active');
-    eventCount.textContent = trace.length;
+    playerContainer.classList.add('active');
+    playerEl.innerHTML = '';
 
-    const sessions = new Set(trace.map(e => e.session).filter(Boolean));
-    const duration = trace.length > 0 ? trace[trace.length - 1].t_ms : 0;
-    traceMeta.textContent = `${trace.length} events | ${sessions.size} session${sessions.size !== 1 ? 's' : ''} | ${formatMs(duration)}`;
+    // Parse header for metadata
+    const firstLine = content.split('\n')[0];
+    try {
+      const header = JSON.parse(firstLine);
+      const eventCount = content.trim().split('\n').length - 1;
+      metaEl.textContent = `${header.width}x${header.height} | ${eventCount} events` +
+        (filename ? ` | ${filename}` : '');
+    } catch { /* not asciicast, that's ok */ }
 
-    scrub.max = trace.length - 1;
-    buildEventList();
-    goTo(0);
-  }
+    // Create a blob URL for the cast content
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
 
-  function formatMs(ms) {
-    if (ms == null) return '';
-    if (ms < 1000) return ms + 'ms';
-    return (ms / 1000).toFixed(1) + 's';
-  }
-
-  // ── Event list sidebar ─────────────────────────────────────────────
-  function buildEventList() {
-    eventList.innerHTML = '';
-    trace.forEach((ev, i) => {
-      const item = document.createElement('div');
-      item.className = 'event-item';
-      item.dataset.index = i;
-
-      const time = document.createElement('span');
-      time.className = 'time';
-      time.textContent = formatMs(ev.t_ms);
-
-      const badge = document.createElement('span');
-      const evType = ev.event || ev.status || 'unknown';
-      badge.className = 'badge badge-' + evType.replace(/[^a-z_]/gi, '');
-      badge.textContent = evType.replace(/_/g, ' ');
-
-      const detail = document.createElement('span');
-      detail.className = 'detail';
-      detail.textContent = getEventDetail(ev);
-
-      item.appendChild(time);
-      item.appendChild(badge);
-      item.appendChild(detail);
-
-      // Show wait duration for wait_for events
-      if (ev.wait_ms != null) {
-        const tag = document.createElement('span');
-        tag.className = 'wait-tag' + (ev.wait_ms < 5000 ? ' fast' : '');
-        tag.textContent = formatMs(ev.wait_ms);
-        item.appendChild(tag);
-      }
-
-      item.addEventListener('click', () => {
-        stopPlaying();
-        goTo(i);
-      });
-
-      eventList.appendChild(item);
+    AsciinemaPlayer.create(url, playerEl, {
+      theme: 'monokai',
+      fit: 'width',
+      rows: 40,
+      autoPlay: false,
+      speed: 1,
+      idleTimeLimit: 3,
+      poster: 'npt:0:0',
     });
   }
-
-  function getEventDetail(ev) {
-    if (ev.command) return ev.command;
-    if (ev.text) return ev.text.length > 40 ? ev.text.slice(0, 40) + '...' : ev.text;
-    if (ev.key) return ev.key;
-    if (ev.pattern) return '/' + ev.pattern + '/';
-    if (ev.assertion) return ev.assertion;
-    if (ev.detail) return ev.detail; // demo report format
-    return ev.session || '';
-  }
-
-  // ── Navigation ─────────────────────────────────────────────────────
-  function goTo(index) {
-    if (index < 0 || index >= trace.length) return;
-    currentIndex = index;
-    scrub.value = index;
-    position.textContent = `${index + 1} / ${trace.length}`;
-
-    // Update active item in sidebar
-    const items = eventList.querySelectorAll('.event-item');
-    items.forEach((el, i) => {
-      el.classList.toggle('active', i === index);
-    });
-
-    // Scroll active item into view
-    const activeItem = items[index];
-    if (activeItem) {
-      activeItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    }
-
-    // Update terminal content
-    renderEvent(trace[index]);
-    updateButtonState();
-  }
-
-  function renderEvent(ev) {
-    // Find the most recent screenshot content at or before this event
-    let screenContent = null;
-    for (let i = currentIndex; i >= 0; i--) {
-      if (trace[i].content != null) {
-        screenContent = trace[i].content;
-        break;
-      }
-      // Also check screenshot field from demo reports
-      if (trace[i].screenshot != null) {
-        screenContent = trace[i].screenshot;
-        break;
-      }
-    }
-
-    if (screenContent) {
-      termContent.textContent = screenContent;
-      termContent.classList.remove('no-content');
-    } else {
-      termContent.textContent = 'No terminal content captured yet.\nScreenshot events will appear here.';
-      termContent.classList.add('no-content');
-    }
-
-    // Show annotation for non-screenshot events
-    const evType = ev.event || ev.status || '';
-    if (evType === 'screenshot') {
-      annotation.classList.add('hidden');
-    } else {
-      annotation.classList.remove('hidden');
-      const label = annotation.querySelector('.label');
-      const value = annotation.querySelector('.value');
-      label.textContent = evType.replace(/_/g, ' ').toUpperCase();
-
-      let detail = getEventDetail(ev);
-      if (ev.wait_ms != null) detail += ` (${formatMs(ev.wait_ms)})`;
-      if (ev.cols != null && ev.rows != null) detail += ` ${ev.cols}x${ev.rows}`;
-      value.textContent = detail;
-    }
-  }
-
-  function updateButtonState() {
-    btnPrev.disabled = currentIndex <= 0;
-    btnNext.disabled = currentIndex >= trace.length - 1;
-    btnStart.disabled = currentIndex <= 0;
-    btnEnd.disabled = currentIndex >= trace.length - 1;
-  }
-
-  // ── Playback ───────────────────────────────────────────────────────
-  function startPlaying() {
-    if (currentIndex >= trace.length - 1) goTo(0);
-    playing = true;
-    btnPlay.textContent = '\u23F8'; // pause icon
-    scheduleNext();
-  }
-
-  function stopPlaying() {
-    playing = false;
-    btnPlay.textContent = '\u25B6'; // play icon
-    if (playTimer) {
-      clearTimeout(playTimer);
-      playTimer = null;
-    }
-  }
-
-  function scheduleNext() {
-    if (!playing || currentIndex >= trace.length - 1) {
-      stopPlaying();
-      return;
-    }
-
-    // Calculate delay based on time difference between events
-    const curr = trace[currentIndex];
-    const next = trace[currentIndex + 1];
-    let delay = 100; // minimum delay
-
-    if (curr.t_ms != null && next.t_ms != null) {
-      delay = Math.max(50, (next.t_ms - curr.t_ms) / speed);
-      // Cap at 3 seconds real time (even for very slow steps)
-      delay = Math.min(delay, 3000);
-    }
-
-    playTimer = setTimeout(() => {
-      goTo(currentIndex + 1);
-      scheduleNext();
-    }, delay);
-  }
-
-  function togglePlay() {
-    if (playing) {
-      stopPlaying();
-    } else {
-      startPlaying();
-    }
-  }
-
-  function cycleSpeed() {
-    speedIdx = (speedIdx + 1) % speeds.length;
-    speed = speeds[speedIdx];
-    speedLabel.textContent = speed + 'x';
-  }
-
-  // ── Event listeners ────────────────────────────────────────────────
-  btnStart.addEventListener('click', () => { stopPlaying(); goTo(0); });
-  btnPrev.addEventListener('click', () => { stopPlaying(); goTo(currentIndex - 1); });
-  btnPlay.addEventListener('click', togglePlay);
-  btnNext.addEventListener('click', () => { stopPlaying(); goTo(currentIndex + 1); });
-  btnEnd.addEventListener('click', () => { stopPlaying(); goTo(trace.length - 1); });
-  btnSpeed.addEventListener('click', cycleSpeed);
-
-  scrub.addEventListener('input', () => {
-    stopPlaying();
-    goTo(parseInt(scrub.value, 10));
-  });
-
-  // Keyboard shortcuts
-  document.addEventListener('keydown', (e) => {
-    if (trace.length === 0) return;
-    switch (e.key) {
-      case 'ArrowLeft':
-        e.preventDefault();
-        stopPlaying();
-        goTo(currentIndex - 1);
-        break;
-      case 'ArrowRight':
-        e.preventDefault();
-        stopPlaying();
-        goTo(currentIndex + 1);
-        break;
-      case ' ':
-        e.preventDefault();
-        togglePlay();
-        break;
-      case 'Home':
-        e.preventDefault();
-        stopPlaying();
-        goTo(0);
-        break;
-      case 'End':
-        e.preventDefault();
-        stopPlaying();
-        goTo(trace.length - 1);
-        break;
-    }
-  });
 
   // File input
   fileInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        loadTrace(JSON.parse(reader.result));
-      } catch (err) {
-        alert('Failed to parse JSON: ' + err.message);
-      }
-    };
+    reader.onload = () => loadCast(reader.result, file.name);
     reader.readAsText(file);
   });
 
   // Drag & drop
-  document.addEventListener('dragover', (e) => { e.preventDefault(); });
+  document.addEventListener('dragover', (e) => e.preventDefault());
   document.addEventListener('drop', (e) => {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        loadTrace(JSON.parse(reader.result));
-      } catch (err) {
-        alert('Failed to parse JSON: ' + err.message);
-      }
-    };
+    reader.onload = () => loadCast(reader.result, file.name);
     reader.readAsText(file);
   });
 
-  // URL param loading
+  // URL param
   const urlParam = new URLSearchParams(window.location.search).get('url');
   if (urlParam) {
     fetch(urlParam)
-      .then(r => r.json())
-      .then(loadTrace)
-      .catch(err => {
-        console.error('Failed to load trace from URL:', err);
-        alert('Failed to load trace from URL: ' + err.message);
-      });
-  }
-
-  // Also support loading from ?file= (local file path won't work in browser, but good for docs)
-  const fileParam = new URLSearchParams(window.location.search).get('file');
-  if (fileParam) {
-    fetch(fileParam)
-      .then(r => r.json())
-      .then(loadTrace)
-      .catch(err => console.error('Failed to load trace from file param:', err));
+      .then(r => r.text())
+      .then(content => loadCast(content, urlParam.split('/').pop()))
+      .catch(err => alert('Failed to load: ' + err.message));
   }
 })();
 </script>
