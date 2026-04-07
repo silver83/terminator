@@ -1,0 +1,40 @@
+{
+  "name": "terminator-mcp",
+  "version": "0.1.0",
+  "description": "Playwright for terminals — an MCP server that lets AI agents interact with CLI applications",
+  "type": "module",
+  "main": "build/index.js",
+  "bin": {
+    "terminator": "build/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node build/index.js",
+    "dev": "tsc --watch",
+    "test": "node --test build/test.js",
+    "test:e2e": "node --test build/e2e-test.js",
+    "test:all": "node --test build/test.js build/e2e-test.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "terminal",
+    "testing",
+    "tmux",
+    "cli",
+    "playwright",
+    "e2e"
+  ],
+  "author": "Yoni Shalom",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
