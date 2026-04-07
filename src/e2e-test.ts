@@ -22,9 +22,9 @@ describe("terminator MCP E2E", () => {
     await client.connect(transport);
   });
 
-  it("lists 7 tools", async () => {
+  it("lists 8 tools", async () => {
     const { tools } = await client.listTools();
-    assert.equal(tools.length, 7, `Expected 7 tools, got ${tools.length}`);
+    assert.equal(tools.length, 8, `Expected 8 tools, got ${tools.length}`);
 
     const names = tools.map((t) => t.name).sort();
     assert.deepEqual(names, [
@@ -33,6 +33,7 @@ describe("terminator MCP E2E", () => {
       "terminal_screenshot",
       "terminal_send_key",
       "terminal_spawn",
+      "terminal_trace",
       "terminal_type",
       "terminal_wait_for",
     ]);
@@ -133,6 +134,29 @@ describe("terminator MCP E2E", () => {
 
     const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
     assert.equal(data.pass, true);
+  });
+
+  it("retrieves trace with recorded events", async () => {
+    const result = await client.callTool({
+      name: "terminal_trace",
+      arguments: { session_id: sessionId },
+    });
+
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    assert.ok(data.events > 0, "Trace should have recorded events");
+    assert.ok(Array.isArray(data.trace), "Trace should be an array");
+
+    // Verify the trace has the expected event types from previous test steps
+    const eventTypes = data.trace.map((e: { event: string }) => e.event);
+    assert.ok(eventTypes.includes("spawn"), "Trace should include spawn event");
+    assert.ok(eventTypes.includes("type"), "Trace should include type event");
+    assert.ok(eventTypes.includes("send_key"), "Trace should include send_key event");
+
+    // Every event should have t_ms and session fields
+    for (const event of data.trace) {
+      assert.ok(typeof event.t_ms === "number", "Each event should have t_ms");
+      assert.equal(event.session, sessionId, "Filtered trace should only have our session");
+    }
   });
 
   it("closes the session", async () => {

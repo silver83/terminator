@@ -9,6 +9,8 @@ import {
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { randomBytes } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { Recorder } from "./recorder.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -23,6 +25,12 @@ interface TerminalSession {
 }
 
 const sessions = new Map<string, TerminalSession>();
+
+// ── Trace recorder ─────────────────────────────────────────────────────────
+
+const recorder = new Recorder({
+  enabled: process.env.TERMINATOR_NO_TRACE !== "1",
+});
 
 function generateSessionId(): string {
   return "term_" + randomBytes(4).toString("hex");
@@ -109,6 +117,8 @@ async function terminalSpawn(params: {
   };
   sessions.set(id, session);
 
+  recorder.record({ event: "spawn", session: id, command: fullCmd, cols, rows });
+
   return { session_id: id, cols, rows };
 }
 
@@ -122,6 +132,8 @@ async function terminalType(params: {
   // tmux send-keys with -l flag sends literal characters (no key name interpretation)
   // We send the whole string at once — tmux handles it correctly
   await tmux("send-keys", "-t", params.session_id, "-l", params.text);
+
+  recorder.record({ event: "type", session: params.session_id, text: params.text });
 
   // Optional delay to let the application process input
   if (params.delay_ms && params.delay_ms > 0) {
@@ -174,6 +186,8 @@ async function terminalSendKey(params: {
   // send-keys WITHOUT -l interprets key names
   await tmux("send-keys", "-t", params.session_id, tmuxKey);
 
+  recorder.record({ event: "send_key", session: params.session_id, key: params.key });
+
   return { ok: true };
 }
 
@@ -183,9 +197,17 @@ async function terminalScreenshot(params: {
   const session = await requireAliveSession(params.session_id);
 
   const screen = await tmux("capture-pane", "-t", params.session_id, "-p");
+  const trimmed = screen.trimEnd();
+
+  recorder.record({
+    event: "screenshot",
+    session: params.session_id,
+    lines: trimmed.split("\n").length,
+    content: trimmed,
+  });
 
   return {
-    screen: screen.trimEnd(),
+    screen: trimmed,
     rows: session.rows,
     cols: session.cols,
   };
@@ -204,13 +226,27 @@ async function terminalWaitFor(params: {
   const regex = new RegExp(params.pattern);
   const start = Date.now();
 
+  recorder.record({
+    event: "wait_for_start",
+    session: params.session_id,
+    pattern: params.pattern,
+    timeout_ms: timeout,
+  });
+
   while (Date.now() - start < timeout) {
     const screen = await tmux("capture-pane", "-t", params.session_id, "-p");
     if (regex.test(screen)) {
+      const wait_ms = Date.now() - start;
+      recorder.record({
+        event: "wait_for_found",
+        session: params.session_id,
+        pattern: params.pattern,
+        wait_ms,
+      });
       return {
         found: true,
         screen: screen.trimEnd(),
-        elapsed_ms: Date.now() - start,
+        elapsed_ms: wait_ms,
       };
     }
     await new Promise((resolve) => setTimeout(resolve, interval));
@@ -218,10 +254,18 @@ async function terminalWaitFor(params: {
 
   // One final check
   const screen = await tmux("capture-pane", "-t", params.session_id, "-p");
+  const found = regex.test(screen);
+  const wait_ms = Date.now() - start;
+  recorder.record({
+    event: found ? "wait_for_found" : "wait_for_timeout",
+    session: params.session_id,
+    pattern: params.pattern,
+    wait_ms,
+  });
   return {
-    found: regex.test(screen),
+    found,
     screen: screen.trimEnd(),
-    elapsed_ms: Date.now() - start,
+    elapsed_ms: wait_ms,
   };
 }
 
@@ -242,6 +286,12 @@ async function terminalAssert(params: {
   } else {
     pass = trimmedScreen.includes(params.text);
   }
+
+  recorder.record({
+    event: pass ? "assert_pass" : "assert_fail",
+    session: params.session_id,
+    assertion: `${pass ? "contains" : "missing"} ${params.regex ? "pattern" : "text"} '${params.text}'`,
+  });
 
   return {
     pass,
@@ -266,8 +316,26 @@ async function terminalClose(params: {
     // Session already dead — that's fine
   }
 
+  recorder.record({ event: "close", session: params.session_id });
   sessions.delete(params.session_id);
   return { ok: true };
+}
+
+async function terminalTrace(params: {
+  session_id?: string;
+  save_path?: string;
+}): Promise<{ events: number; trace: unknown[]; saved_to?: string }> {
+  const trace = params.session_id
+    ? recorder.getTraceForSession(params.session_id)
+    : recorder.getTrace();
+
+  let saved_to: string | undefined;
+  if (params.save_path) {
+    writeFileSync(params.save_path, JSON.stringify(trace, null, 2));
+    saved_to = params.save_path;
+  }
+
+  return { events: trace.length, trace, saved_to };
 }
 
 // ── MCP Server ──────────────────────────────────────────────────────────────
@@ -434,6 +502,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["session_id"],
       },
     },
+    {
+      name: "terminal_trace",
+      description:
+        "Retrieve the recorded trace of all terminal operations since the server started. Each event has a t_ms timestamp, event type, session ID, and operation-specific fields. Useful for debugging timing issues, sharing with AI agents for analysis, or saving as a test artifact.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: {
+            type: "string",
+            description: "Filter trace to a specific session (optional — omit for all sessions)",
+          },
+          save_path: {
+            type: "string",
+            description: "File path to save the trace JSON (optional)",
+          },
+        },
+        required: [],
+      },
+    },
   ],
 }));
 
@@ -469,6 +556,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "terminal_close": {
         const result = await terminalClose(args as Parameters<typeof terminalClose>[0]);
         return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      }
+      case "terminal_trace": {
+        const result = await terminalTrace(args as Parameters<typeof terminalTrace>[0]);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
       default:
         return {

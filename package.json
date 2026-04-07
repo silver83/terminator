@@ -11,9 +11,9 @@
     "build": "tsc",
     "start": "node build/index.js",
     "dev": "tsc --watch",
-    "test": "node --test build/test.js",
+    "test": "node --test build/test.js build/recorder-test.js",
     "test:e2e": "node --test build/e2e-test.js",
-    "test:all": "node --test build/test.js build/e2e-test.js",
+    "test:all": "node --test build/test.js build/recorder-test.js build/e2e-test.js",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
