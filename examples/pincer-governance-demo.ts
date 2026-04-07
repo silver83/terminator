@@ -151,6 +151,8 @@ function log(msg: string): void {
 }
 
 function printScreen(label: string, screen: string): void {
+  // When the live pane is visible, skip dumping screenshots — the right pane IS the visual.
+  if (livePaneId) return;
   console.error(`\n┌─── ${label} ${"─".repeat(Math.max(0, 70 - label.length))}┐`);
   for (const line of screen.split("\n").slice(0, 30)) {
     console.error(`│ ${line}`);
@@ -236,15 +238,12 @@ async function step2_launchClaude(): Promise<StepResult> {
     printScreen("Pincer banner", bannerResult.screen);
   }
 
-  // Wait for Claude to fully load — look for the input prompt ❯
+  // Wait for Claude's input prompt — once ❯ appears, Claude is ready
   const { found, screen, elapsed } = await waitFor(
     claudeTarget,
     /❯/,
     TIMEOUT_CLAUDE_START
   );
-
-  // Let the UI fully settle
-  await sleep(2000);
 
   if (!found) {
     printScreen("Claude startup", screen);
@@ -304,9 +303,8 @@ async function step2_launchClaude(): Promise<StepResult> {
 }
 
 async function waitForClaudeReady(): Promise<void> {
-  // Wait until Claude shows the input prompt (❯) and is not processing
+  // Wait until Claude shows the input prompt — ❯ means ready for input
   await waitFor(claudeTarget, /❯\s*$/, 10_000);
-  await sleep(500); // Small buffer for UI to settle
 }
 
 async function step3_safeCommand(): Promise<StepResult> {
