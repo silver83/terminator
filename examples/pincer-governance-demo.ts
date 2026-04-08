@@ -366,8 +366,10 @@ async function step2_launchClaude(): Promise<StepResult> {
 }
 
 async function waitForClaudeReady(): Promise<void> {
-  // Wait until Claude shows the input prompt — ❯ means ready for input
-  await waitFor(claudeTarget, /❯\s*$/, 10_000);
+  // Wait until Claude shows the input prompt — ❯ means ready for input.
+  // Use multiline flag: $ must match end-of-line, not end-of-string,
+  // because tmux captures status bar lines below the prompt.
+  await waitFor(claudeTarget, /❯\s*$/m, 10_000);
 }
 
 async function step3_safeCommand(): Promise<StepResult> {
