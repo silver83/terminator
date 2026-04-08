@@ -26,7 +26,7 @@
 
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -659,17 +659,36 @@ async function main() {
   console.error(`  Total: ${results.length} | Pass: ${passed} | Fail: ${failed} | Skip: ${skipped}`);
   console.error("═══════════════════════════════════════════════════════════");
 
-  // Also write JSON report to stdout for programmatic consumption.
-  // In live mode (tmux), strip screenshot fields — they're huge and the user sees them live.
-  const reportSteps = process.env.TMUX
-    ? results.map(({ screenshot, ...rest }) => rest)
-    : results;
+  // Write detailed report + asciicast to files, print paths on stdout
+  const ts = Math.floor(Date.now() / 1000);
+  const traceFile = join(tmpdir(), `terminator-trace-${ts}.json`);
+  const castFile = join(tmpdir(), `terminator-trace-${ts}.cast`);
+
   const report = {
     timestamp: new Date().toISOString(),
     summary: { total: results.length, passed, failed, skipped },
-    steps: reportSteps,
+    steps: results,
   };
-  console.log(JSON.stringify(report, null, 2));
+  writeFileSync(traceFile, JSON.stringify(report, null, 2));
+
+  // Build a simple asciicast from screenshot events in the results
+  const castLines: string[] = [
+    JSON.stringify({ version: 2, width: 120, height: 40, timestamp: ts }),
+  ];
+  let castTime = 0;
+  for (const r of results) {
+    if (r.screenshot) {
+      const content = r.screenshot.replace(/\r?\n/g, "\r\n");
+      castLines.push(JSON.stringify([castTime, "o", "\x1b[2J\x1b[H" + content]));
+    }
+    castTime += (r.elapsed ?? 1000) / 1000;
+  }
+  writeFileSync(castFile, castLines.join("\n") + "\n");
+
+  // Clean one-line summary on stdout
+  console.log(`Total: ${results.length} | Pass: ${passed} | Fail: ${failed} | Skip: ${skipped}`);
+  console.log(`Trace: ${traceFile}`);
+  console.log(`Cast:  ${castFile}`);
 
   process.exit(failed > 0 ? 1 : 0);
 }
