@@ -165,9 +165,22 @@ const SESSION_CLAUDE = "demo_claude";
 // All tmux commands target this ID (session name when headless, pane ID when live).
 let claudeTarget = SESSION_CLAUDE;
 
-function log(msg: string): void {
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function log(msg: string, delayMs = 100): void {
+  if (delayMs > 0) sleepSync(delayMs);
   const ts = new Date().toISOString().slice(11, 19);
   console.error(`[${ts}] ${msg}`);
+}
+
+function logStep(msg: string): void {
+  log(msg, 500);
+}
+
+function logResult(msg: string): void {
+  log(msg, 300);
 }
 
 function printScreen(label: string, screen: string): void {
@@ -185,7 +198,7 @@ function printScreen(label: string, screen: string): void {
 
 async function step0_preflight(): Promise<StepResult> {
   const name = "0. Preflight checks";
-  log(name);
+  logStep(name);
 
   const missing: string[] = [];
   if (!existsSync(PINCERD_BIN)) missing.push(`pincerd not found at ${PINCERD_BIN}`);
@@ -210,7 +223,7 @@ async function step0_preflight(): Promise<StepResult> {
 
 async function step1_startDaemon(): Promise<StepResult> {
   const name = "1. Start pincerd daemon";
-  log(name);
+  logStep(name);
 
   await spawn(SESSION_DAEMON, PINCERD_BIN, { cols: 120, rows: 24 });
 
@@ -241,7 +254,7 @@ async function step1_startDaemon(): Promise<StepResult> {
 
 async function step2_launchClaude(): Promise<StepResult> {
   const name = "2. Launch Claude under Pincer governance";
-  log(name);
+  logStep(name);
 
   const cmd = `${PINCER_CLI} run --no-sandbox -- claude`;
   await spawn(SESSION_CLAUDE, cmd, { cols: 120, rows: 40, cwd: WORK_DIR });
@@ -403,7 +416,7 @@ async function waitForClaudeReady(): Promise<void> {
 
 async function step3_safeCommand(): Promise<StepResult> {
   const name = "3. Test safe command (ls)";
-  log(name);
+  logStep(name);
 
   // Wait for Claude's prompt to be ready
   log("  Waiting for prompt...");
@@ -464,7 +477,7 @@ async function step3_safeCommand(): Promise<StepResult> {
 
 async function step4_destructiveCommand(): Promise<StepResult> {
   const name = "4. Test destructive command (rm -rf)";
-  log(name);
+  logStep(name);
 
   // Wait for Claude to finish the previous response and show prompt
   log("  Waiting for Claude to be ready...");
@@ -523,7 +536,7 @@ async function step4_destructiveCommand(): Promise<StepResult> {
 
 async function step5_respondToDialog(): Promise<StepResult> {
   const name = "5. Respond to governance dialog";
-  log(name);
+  logStep(name);
 
   const screen = await screenshot(claudeTarget);
 
@@ -570,7 +583,7 @@ async function step5_respondToDialog(): Promise<StepResult> {
 
 async function step6_failClosed(): Promise<StepResult> {
   const name = "6. Test fail-closed (daemon unreachable)";
-  log(name);
+  logStep(name);
 
   // Kill the daemon
   log("  Killing pincerd...");
@@ -662,7 +675,7 @@ async function main() {
     try {
       const result = await step();
       results.push(result);
-      log(`  → ${result.status}: ${result.detail}`);
+      logResult(`  → ${result.status}: ${result.detail}`);
 
       // Abort on preflight or daemon failure
       if (result.status === "FAIL" && (step === step0_preflight || step === step1_startDaemon)) {
@@ -671,7 +684,7 @@ async function main() {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       results.push({ name: step.name, status: "FAIL", detail: `Exception: ${msg}` });
-      log(`  → FAIL (exception): ${msg}`);
+      logResult(`  → FAIL (exception): ${msg}`);
     }
   }
 
