@@ -171,8 +171,9 @@ function log(msg: string): void {
 }
 
 function printScreen(label: string, screen: string): void {
-  // When the live pane is visible, skip dumping screenshots — the right pane IS the visual.
-  if (livePaneId) return;
+  // When running inside tmux, the live split pane IS the visual — never dump screenshots.
+  // Check process.env.TMUX (not livePaneId) because printScreen may be called before join-pane.
+  if (process.env.TMUX) return;
   console.error(`\n┌─── ${label} ${"─".repeat(Math.max(0, 70 - label.length))}┐`);
   for (const line of screen.split("\n").slice(0, 30)) {
     console.error(`│ ${line}`);
@@ -658,11 +659,15 @@ async function main() {
   console.error(`  Total: ${results.length} | Pass: ${passed} | Fail: ${failed} | Skip: ${skipped}`);
   console.error("═══════════════════════════════════════════════════════════");
 
-  // Also write JSON report to stdout for programmatic consumption
+  // Also write JSON report to stdout for programmatic consumption.
+  // In live mode (tmux), strip screenshot fields — they're huge and the user sees them live.
+  const reportSteps = process.env.TMUX
+    ? results.map(({ screenshot, ...rest }) => rest)
+    : results;
   const report = {
     timestamp: new Date().toISOString(),
     summary: { total: results.length, passed, failed, skipped },
-    steps: results,
+    steps: reportSteps,
   };
   console.log(JSON.stringify(report, null, 2));
 
