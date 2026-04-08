@@ -267,8 +267,23 @@ async function step2_launchClaude(): Promise<StepResult> {
 
   if (/trust this folder|safety check/i.test(trustCheck.screen)) {
     log("  Trust dialog detected — selecting '1. Yes, I trust this folder'");
+    // Wait for the dialog to become interactive before pressing Enter
+    await sleep(300);
     await sendKey(claudeTarget, "Enter");
-    await sleep(1000);
+    await sleep(500);
+
+    // Verify the dialog dismissed — wait for prompt or banner to appear
+    const dismissed = await waitFor(
+      claudeTarget,
+      /❯|running under Pincer/i,
+      5_000
+    );
+    if (!dismissed.found) {
+      // Enter may have been swallowed — retry
+      log("  Trust dialog still showing — retrying Enter");
+      await sendKey(claudeTarget, "Enter");
+      await sleep(500);
+    }
   }
 
   // Now wait for the governance banner (may already be visible)
