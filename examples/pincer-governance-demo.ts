@@ -246,64 +246,93 @@ async function step2_launchClaude(): Promise<StepResult> {
   const cmd = `${PINCER_CLI} run --no-sandbox -- claude`;
   await spawn(SESSION_CLAUDE, cmd, { cols: 120, rows: 40, cwd: WORK_DIR });
 
-  // FIRST: check for the workspace trust dialog — this appears immediately in fresh dirs
-  // and blocks everything until answered. Check before anything else.
-  log("  Checking for workspace trust dialog...");
-  const trustCheck = await waitFor(
+  // Wait for Claude to show ANY sign of life
+  log("  Waiting for Claude to start...");
+  const startResult = await waitFor(
     claudeTarget,
-    /trust this folder|safety check|❯|running under Pincer/i,
+    /safety check|trust this folder|running under Pincer|❯/i,
     TIMEOUT_CLAUDE_START
   );
 
-  if (!trustCheck.found) {
-    printScreen("Claude startup", trustCheck.screen);
+  if (!startResult.found) {
+    printScreen("Claude startup", startResult.screen);
     return {
       name,
       status: "FAIL",
       detail: `Claude did not start within ${TIMEOUT_CLAUDE_START}ms`,
-      screenshot: trustCheck.screen,
+      screenshot: startResult.screen,
     };
   }
 
-  if (/trust this folder|safety check/i.test(trustCheck.screen)) {
-    log("  Trust dialog detected — selecting '1. Yes, I trust this folder'");
-    // Wait for the dialog to become interactive before pressing Enter
-    await sleep(300);
-    await sendKey(claudeTarget, "Enter");
-    await sleep(500);
+  // The trust dialog can appear AFTER the governance banner (race condition).
+  // Wait a moment then re-check the screen — the banner may have appeared first.
+  await sleep(1000);
+  let currentScreen = await screenshot(claudeTarget);
 
-    // Verify the dialog dismissed — wait for prompt or banner to appear
-    const dismissed = await waitFor(
-      claudeTarget,
-      /❯|running under Pincer/i,
-      5_000
-    );
-    if (!dismissed.found) {
-      // Enter may have been swallowed — retry
+  if (/safety check|trust this folder/i.test(currentScreen)) {
+    log("  Trust dialog detected — selecting '1. Yes, I trust this folder'");
+    await sleep(300); // let dialog become interactive
+    await sendKey(claudeTarget, "Enter");
+
+    // Verify dismissed: poll until trust dialog text is gone from screen
+    log("  Verifying trust dialog dismissed...");
+    await sleep(1000);
+    currentScreen = await screenshot(claudeTarget);
+
+    if (/safety check|trust this folder/i.test(currentScreen)) {
       log("  Trust dialog still showing — retrying Enter");
       await sendKey(claudeTarget, "Enter");
-      await sleep(500);
+      await sleep(1000);
+    }
+
+    // Re-check: if trust dialog text is still visible, retry one more time
+    currentScreen = await screenshot(claudeTarget);
+    if (/safety check|trust this folder/i.test(currentScreen)) {
+      log("  Trust dialog still present — final retry");
+      await sendKey(claudeTarget, "Enter");
+      await sleep(1000);
     }
   }
 
-  // Now wait for the governance banner (may already be visible)
+  // Wait for the governance banner
   const bannerResult = await waitFor(
     claudeTarget,
     /running under Pincer governance/,
-    10_000
+    15_000
   );
 
   if (bannerResult.found) {
     log("  Governance banner appeared");
-    printScreen("Pincer banner", bannerResult.screen);
   }
 
-  // Wait for the ❯ prompt — Claude is ready for input
-  const { found, screen, elapsed } = await waitFor(
-    claudeTarget,
-    /❯/,
-    TIMEOUT_CLAUDE_START
-  );
+  // Wait for Claude's INPUT prompt — NOT the trust dialog's menu ❯.
+  // Claude's prompt: a bare "❯" at end of line, NOT followed by "1." or "2."
+  // Trust dialog: "❯ 1. Yes, I trust this folder"
+  log("  Waiting for input prompt...");
+  const promptStart = Date.now();
+  let found = false;
+  let screen = "";
+  let elapsed = 0;
+
+  while (Date.now() - promptStart < TIMEOUT_CLAUDE_START) {
+    screen = await screenshot(claudeTarget);
+    // Must have ❯ but NOT the trust dialog
+    const hasPrompt = /❯/m.test(screen);
+    const hasTrustDialog = /trust this folder|safety check/i.test(screen);
+    if (hasPrompt && !hasTrustDialog) {
+      found = true;
+      elapsed = Date.now() - promptStart;
+      break;
+    }
+    await sleep(POLL_INTERVAL);
+  }
+
+  if (!found) {
+    screen = await screenshot(claudeTarget);
+    elapsed = Date.now() - promptStart;
+    // One more check
+    found = /❯/m.test(screen) && !/trust this folder|safety check/i.test(screen);
+  }
 
   if (!found) {
     printScreen("Claude startup", screen);
