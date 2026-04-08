@@ -375,19 +375,23 @@ async function step3_safeCommand(): Promise<StepResult> {
   log(name);
 
   // Wait for Claude's prompt to be ready
+  log("  Waiting for prompt...");
   await waitForClaudeReady();
 
   // Type a prompt asking Claude to list files
+  log("  Typing prompt...");
   await type(claudeTarget, "please run ls in the current directory");
   await sendKey(claudeTarget, "Enter");
 
   // Wait for Claude to start processing (the spinner or "thinking" indicator)
-  log("  Waiting for Claude to process...");
-  await waitFor(claudeTarget, /\.{3}|Thinking|thinking|Running|Bash/, 15_000);
+  log("  Waiting for Claude to respond...");
+  const processing = await waitFor(claudeTarget, /\.{3}|Thinking|thinking|Running|Bash|⏺/, 15_000);
+  if (processing.found) {
+    log(`  Claude processing... (${processing.elapsed}ms)`);
+  }
 
   // Now wait for tool output or Claude's response — ls output should appear
   // without any governance prompt since ls is safe.
-  // We're in a temp dir so look for Claude's response or tool completion indicators.
   const { found, screen, elapsed } = await waitFor(
     claudeTarget,
     /Bash|Listed|empty|no files|directory is empty|✓|⏺/,
@@ -441,8 +445,11 @@ async function step4_destructiveCommand(): Promise<StepResult> {
   await sendKey(claudeTarget, "Enter");
 
   // Wait for Claude to start processing
-  log("  Waiting for Claude to process destructive request...");
-  await waitFor(claudeTarget, /\.{3}|Thinking|thinking|Running|Bash/, 15_000);
+  log("  Waiting for Claude to respond...");
+  const processing = await waitFor(claudeTarget, /\.{3}|Thinking|thinking|Running|Bash|⏺/, 15_000);
+  if (processing.found) {
+    log(`  Claude processing... (${processing.elapsed}ms)`);
+  }
 
   // Wait for the governance dialog — Claude renders it as:
   //   "Hook PreToolUse:Bash requires confirmation for this command:"
